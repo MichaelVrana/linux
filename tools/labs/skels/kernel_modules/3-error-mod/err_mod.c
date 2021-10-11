@@ -1,6 +1,7 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 /* TODO: add missing kernel headers */
+#include <linux/module.h>
 
 MODULE_DESCRIPTION("Error module");
 MODULE_AUTHOR("Kernel Hacker");
