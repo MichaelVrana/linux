@@ -60,10 +60,8 @@ static int list_proc_show(struct seq_file *m, void *v)
 	struct list_node *curr;
 
 	/* TODO 3: print your list. One element / line. */
-	list_for_each_entry (curr, &head, list) {
+	list_for_each_entry (curr, &head, list)
 		seq_puts(m, curr->str);
-		seq_putc(m, '\n');
-	}
 
 	return 0;
 }
@@ -78,21 +76,12 @@ static int list_write_open(struct inode *inode, struct file *file)
 	return single_open(file, list_proc_show, NULL);
 }
 
-static int buffer_starts_with(const char *buffer, const char *pattern)
-{
-	for (size_t i = 0; pattern[i]; ++i)
-		if (buffer[i] != pattern[i])
-			return FALSE;
-
-	return TRUE;
-}
-
 static int parse_command(const char *buffer, unsigned long size)
 {
 	if (size < COMMAND_LENGTH)
 		return PARSE_ERROR;
 
-	if (buffer_starts_with(buffer, "add")) {
+	if (!strncmp(buffer, "add", COMMAND_LENGTH - 1)) {
 		switch (buffer[3]) {
 		case 'f':
 			return ADD_START;
@@ -101,7 +90,7 @@ static int parse_command(const char *buffer, unsigned long size)
 		}
 	}
 
-	if (buffer_starts_with(buffer, "del")) {
+	if (!strncmp(buffer, "del", COMMAND_LENGTH - 1)) {
 		switch (buffer[3]) {
 		case 'f':
 			return DEL_FIRST;
@@ -161,6 +150,41 @@ static void add_end(const char *str)
 	list_add_tail(&node->list, &head);
 }
 
+static void delete_first(const char *str)
+{
+	struct list_head *curr;
+	struct list_head *tmp;
+	struct list_node *node;
+
+	list_for_each_safe (curr, tmp, &head) {
+		node = list_entry(curr, struct list_node, list);
+
+		if (!strcmp(str, node->str)) {
+			list_del(curr);
+			kfree(node->str);
+			kfree(node);
+			return;
+		}
+	}
+}
+
+static void delete_all(const char *str)
+{
+	struct list_head *curr;
+	struct list_head *tmp;
+	struct list_node *node;
+
+	list_for_each_safe (curr, tmp, &head) {
+		node = list_entry(curr, struct list_node, list);
+
+		if (!strcmp(str, node->str)) {
+			list_del(curr);
+			kfree(node->str);
+			kfree(node);
+		}
+	}
+}
+
 static int process_command(const char *buffer, size_t size)
 {
 	int command = parse_command(buffer, size);
@@ -172,7 +196,12 @@ static int process_command(const char *buffer, size_t size)
 	case ADD_END:
 		add_end(extract_string(buffer, size));
 		break;
-
+	case DEL_FIRST:
+		delete_first(extract_string(buffer, size));
+		break;
+	case DEL_ALL:
+		delete_all(extract_string(buffer, size));
+		break;
 	default:
 		return 0;
 	}
@@ -197,7 +226,8 @@ static ssize_t list_write(struct file *file, const char __user *buffer,
 	/* local_buffer contains your command written in /proc/list/management
 	 * TODO 4/0: parse the command and add/delete elements.
 	 */
-	if (!process_command(buffer, count)) return -EFAULT;
+	if (!process_command(local_buffer, local_buffer_size))
+		return -EINVAL;
 
 	return local_buffer_size;
 }
