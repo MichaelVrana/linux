@@ -14,6 +14,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
+#include <linux/spinlock.h>
 
 #define FALSE 0
 #define TRUE 1
@@ -43,6 +44,11 @@ struct list_node {
 	struct list_head list;
 };
 
+/* TODO 2: define your list! */
+LIST_HEAD(head);
+
+DEFINE_RWLOCK(lock);
+
 static struct list_node *list_node_init(const char *str)
 {
 	struct list_node *node = kmalloc(sizeof(*node), GFP_KERNEL);
@@ -52,16 +58,17 @@ static struct list_node *list_node_init(const char *str)
 	return node;
 }
 
-/* TODO 2: define your list! */
-LIST_HEAD(head);
-
 static int list_proc_show(struct seq_file *m, void *v)
 {
 	struct list_node *curr;
 
+	read_lock(&lock);
+
 	/* TODO 3: print your list. One element / line. */
 	list_for_each_entry (curr, &head, list)
 		seq_puts(m, curr->str);
+
+	read_unlock(&lock);
 
 	return 0;
 }
@@ -141,13 +148,23 @@ static char *extract_string(const char *buffer, unsigned long size)
 static void add_start(const char *str)
 {
 	struct list_node *node = list_node_init(str);
+
+	write_lock(&lock);
+
 	list_add(&node->list, &head);
+
+	write_unlock(&lock);
 }
 
 static void add_end(const char *str)
 {
 	struct list_node *node = list_node_init(str);
+
+	write_lock(&lock);
+
 	list_add_tail(&node->list, &head);
+
+	write_unlock(&lock);
 }
 
 static void delete_first(const char *str)
@@ -156,6 +173,8 @@ static void delete_first(const char *str)
 	struct list_head *tmp;
 	struct list_node *node;
 
+	write_lock(&lock);
+
 	list_for_each_safe (curr, tmp, &head) {
 		node = list_entry(curr, struct list_node, list);
 
@@ -163,9 +182,12 @@ static void delete_first(const char *str)
 			list_del(curr);
 			kfree(node->str);
 			kfree(node);
-			return;
+
+			break;
 		}
 	}
+
+	write_unlock(&lock);
 }
 
 static void delete_all(const char *str)
@@ -174,6 +196,8 @@ static void delete_all(const char *str)
 	struct list_head *tmp;
 	struct list_node *node;
 
+	write_lock(&lock);
+
 	list_for_each_safe (curr, tmp, &head) {
 		node = list_entry(curr, struct list_node, list);
 
@@ -183,6 +207,8 @@ static void delete_all(const char *str)
 			kfree(node);
 		}
 	}
+
+	write_unlock(&lock);
 }
 
 static int process_command(const char *buffer, size_t size)
@@ -284,6 +310,8 @@ static void delete_list(void)
 	struct list_head *tmp;
 	struct list_node *node;
 
+	write_lock(&lock);
+
 	list_for_each_safe (curr, tmp, &head) {
 		node = list_entry(curr, struct list_node, list);
 
@@ -291,6 +319,8 @@ static void delete_list(void)
 		kfree(node->str);
 		kfree(node);
 	}
+
+	write_unlock(&lock);
 }
 
 static void list_exit(void)
