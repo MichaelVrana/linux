@@ -187,26 +187,35 @@ static void delete_all(const char *str)
 
 static int process_command(const char *buffer, size_t size)
 {
+	const char *str;
 	int command = parse_command(buffer, size);
+
+	if (command == PARSE_ERROR)
+		return FALSE;
+
+	str = extract_string(buffer, size);
 
 	switch (command) {
 	case ADD_START:
-		add_start(extract_string(buffer, size));
+		add_start(str);
 		break;
 	case ADD_END:
-		add_end(extract_string(buffer, size));
+		add_end(str);
 		break;
 	case DEL_FIRST:
-		delete_first(extract_string(buffer, size));
+		delete_first(str);
+		kfree(str);
 		break;
 	case DEL_ALL:
-		delete_all(extract_string(buffer, size));
+		delete_all(str);
+		kfree(str);
 		break;
 	default:
-		return 0;
+		kfree(str);
+		return FALSE;
 	}
 
-	return 1;
+	return TRUE;
 }
 
 static ssize_t list_write(struct file *file, const char __user *buffer,
@@ -269,9 +278,25 @@ proc_list_cleanup:
 	return -ENOMEM;
 }
 
+static void delete_list(void)
+{
+	struct list_head *curr;
+	struct list_head *tmp;
+	struct list_node *node;
+
+	list_for_each_safe (curr, tmp, &head) {
+		node = list_entry(curr, struct list_node, list);
+
+		list_del(curr);
+		kfree(node->str);
+		kfree(node);
+	}
+}
+
 static void list_exit(void)
 {
 	proc_remove(proc_list);
+	delete_list();
 }
 
 module_init(list_init);
