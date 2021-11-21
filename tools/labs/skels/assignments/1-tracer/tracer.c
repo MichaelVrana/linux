@@ -1,9 +1,11 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
+#include <linux/hashtable.h>
 #include "tracer.h"
 
 MODULE_DESCRIPTION("Tracer");
@@ -12,13 +14,39 @@ MODULE_LICENSE("GPL v2");
 
 #define procfs_filename "tracer"
 
+#define TRACER_HASH_TABLE_BITS 8
+
+struct tracer_hlist_node {
+	struct hlist_node node;
+	pid_t pid;
+};
+
+DEFINE_HASHTABLE(tracer_hash_table, TRACER_HASH_TABLE_BITS);
+
 struct proc_dir_entry *proc_entry;
 
 static int tracer_print(struct seq_file *m, void *v)
 {
-	seq_puts(m, "Hello world\n");
+	seq_puts(
+		m,
+		"PID\tkmalloc\tkfree\tkmalloc_mem\tkfree_mem\tsched\tup\tdown\tlock\tunlock\n");
 
 	return 0;
+}
+
+static void delete_hash_table(void)
+{
+	int i;
+	struct hlist_node *tmp;
+	struct tracer_hlist_node *curr;
+
+	hash_for_each_safe (tracer_hash_table, i, tmp, curr, node) {
+		if (!curr)
+			continue;
+
+		hash_del(&(curr->node));
+		kfree(curr);
+	}
 }
 
 static int proc_read_open(struct inode *inode, struct file *file)
@@ -45,6 +73,7 @@ static int tracer_init(void)
 static void tracer_exit(void)
 {
 	proc_remove(proc_entry);
+	delete_hash_table();
 }
 
 module_init(tracer_init);
