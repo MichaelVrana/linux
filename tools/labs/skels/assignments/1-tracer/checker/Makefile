@@ -1,8 +1,11 @@
-LDFLAGS = -m32
+LDFLAGS = -m32 -static
 
 .PHONY: all clean
 
-all: tracer_test
+all: tracer_test tracer.ko
+
+tracer.ko:
+	ln -sfn ../tracer.ko $@
 
 tracer_test: tracer_test.o
 
