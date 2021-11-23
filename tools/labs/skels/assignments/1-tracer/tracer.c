@@ -6,6 +6,7 @@
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
 #include <linux/hashtable.h>
+#include <linux/miscdevice.h>
 #include "tracer.h"
 
 MODULE_DESCRIPTION("Tracer");
@@ -49,6 +50,11 @@ static void delete_hash_table(void)
 	}
 }
 
+static long ioctl(struct file *file, unsigned int command, unsigned long arg)
+{
+	return 1;
+}
+
 static int proc_read_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, tracer_print, NULL);
@@ -60,12 +66,25 @@ static const struct proc_ops pops = {
 	.proc_release = single_release,
 };
 
+static const struct file_operations fops = {
+	.owner = THIS_MODULE,
+	.unlocked_ioctl = ioctl,
+};
+
+static struct miscdevice miscdev = {
+	.minor = TRACER_DEV_MINOR,
+	.name = TRACER_DEV_NAME,
+	.fops = &fops,
+};
+
 static int tracer_init(void)
 {
 	proc_entry = proc_create(procfs_filename, 0444, NULL, &pops);
-
+	
 	if (!proc_entry)
-		return -ENOMEM;
+		return -EIO;
+
+	if (misc_register(&miscdev)) return -EIO;
 
 	return 0;
 }
@@ -73,6 +92,7 @@ static int tracer_init(void)
 static void tracer_exit(void)
 {
 	proc_remove(proc_entry);
+	misc_deregister(&miscdev);
 	delete_hash_table();
 }
 
