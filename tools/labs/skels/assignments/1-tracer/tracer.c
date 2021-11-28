@@ -60,20 +60,18 @@ static struct tracer_hlist_node *get_tracer_entry(pid_t pid)
 
 #define RET_HANDLER_NAME(name) name##_ret_handler
 
-#define KPROBE_NAME(name) name##_kprobe
-
 #define DEFINE_CALL_COUNT_KRETPROBE(name, func_name, node_member)              \
-	static int RET_HANDLER_NAME(func_name)(struct kretprobe_instance * ri,      \
-					  struct pt_regs * regs)               \
+	static int RET_HANDLER_NAME(func_name)(struct kretprobe_instance * ri, \
+					       struct pt_regs * regs)          \
 	{                                                                      \
+		struct tracer_hlist_node *tracer_entry;                        \
 		/* skip kernel threads */                                      \
 		if (!current->mm)                                              \
 			return 0;                                              \
                                                                                \
 		read_lock(&lock);                                              \
                                                                                \
-		struct tracer_hlist_node *tracer_entry =                       \
-			get_tracer_entry(current->pid);                        \
+		tracer_entry = get_tracer_entry(current->pid);                 \
                                                                                \
 		if (tracer_entry)                                              \
 			atomic_inc(&tracer_entry->node_member);                \
@@ -83,13 +81,11 @@ static struct tracer_hlist_node *get_tracer_entry(pid_t pid)
 	}                                                                      \
 	NOKPROBE_SYMBOL(RET_HANDLER_NAME(func_name));                          \
                                                                                \
-	static struct kprobe KPROBE_NAME(func_name) = {                             \
-		.symbol_name = #func_name,                                     \
-	};                                                                     \
-                                                                               \
 	static struct kretprobe name = {                                       \
-		.handler = RET_HANDLER_NAME(func_name),                             \
-		.kp = &KPROBE_NAME(func_name),                                       \
+		.handler = RET_HANDLER_NAME(func_name),                        \
+		.kp = { \
+			.symbol_name = #func_name, \
+		},                                 \
 		.maxactive = 20,                                               \
 	};
 
@@ -120,7 +116,7 @@ static int tracer_print(struct seq_file *m, void *v)
 
 	hash_for_each (tracer_hash_table, i, curr, node) {
 		seq_printf(m, "%u\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
-			   atomic_read(&curr->pid), atomic_read(&curr->kmalloc),
+			   curr->pid, atomic_read(&curr->kmalloc),
 			   atomic_read(&curr->kfree),
 			   atomic_read(&curr->kmalloc_mem),
 			   atomic_read(&curr->kfree_mem),
@@ -240,28 +236,45 @@ static struct miscdevice miscdev = {
 struct proc_dir_entry *proc_entry;
 
 DEFINE_CALL_COUNT_KRETPROBE(sched_probe, schedule, sched)
-// DEFINE_CALL_COUNT_KRETPROBE()
 
-static int __init tracer_init(void)
+static int register_probes(void)
 {
-	proc_create(procfs_filename, 0444, NULL, &pops);
+	return register_kretprobe(&sched_probe);
+}
 
-	if (!proc_entry)
+static void unregister_probes(void)
+{
+	unregister_kretprobe(&sched_probe);
+}
+
+static int tracer_init(void)
+{
+	proc_entry = proc_create(procfs_filename, 0444, NULL, &pops);
+
+	if (!proc_entry) {
+		pr_err("Failed to create procfs entry");
 		return -EIO;
+	}
 
-	if (misc_register(&miscdev))
+	if (misc_register(&miscdev)) {
+		pr_err("Failed to register miscdevice");
 		return -EIO;
+	}
 
-	// return kretprobe_init();
+	if (register_probes()) {
+		pr_err("Failed to register kretprobes");
+		return -EIO;
+	}
+
 	return 0;
 }
 
-static void __exit tracer_exit(void)
+static void tracer_exit(void)
 {
 	proc_remove(proc_entry);
 	misc_deregister(&miscdev);
+	unregister_probes();
 	delete_hash_table();
-	// kretprobe_exit();
 }
 
 module_init(tracer_init);
