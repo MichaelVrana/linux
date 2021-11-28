@@ -58,35 +58,38 @@ static struct tracer_hlist_node *get_tracer_entry(pid_t pid)
 	return NULL;
 }
 
-#define RET_HANDLER_NAME(name) name##_ret_handler
+#define ENTRY_HANDLER_NAME(name) name##_entry_handler
 
 #define DEFINE_CALL_COUNT_KRETPROBE(name, func_name, node_member)              \
-	static int RET_HANDLER_NAME(func_name)(struct kretprobe_instance * ri, \
-					       struct pt_regs * regs)          \
+	static int ENTRY_HANDLER_NAME(func_name)(                              \
+		struct kretprobe_instance * ri, struct pt_regs * regs)         \
 	{                                                                      \
 		struct tracer_hlist_node *tracer_entry;                        \
-		/* skip kernel threads */                                      \
-		if (!current->mm)                                              \
-			return 0;                                              \
+                                                                               \
+		if (!current || !current->pid)                 \
+			return 1;                                              \
                                                                                \
 		read_lock(&lock);                                              \
                                                                                \
 		tracer_entry = get_tracer_entry(current->pid);                 \
                                                                                \
-		if (tracer_entry)                                              \
-			atomic_inc(&tracer_entry->node_member);                \
+		if (!tracer_entry) {                                           \
+			read_unlock(&lock);                                    \
+			return 1;                                              \
+		}                                                              \
                                                                                \
+		atomic_inc(&tracer_entry->node_member);                        \
 		read_unlock(&lock);                                            \
 		return 0;                                                      \
 	}                                                                      \
-	NOKPROBE_SYMBOL(RET_HANDLER_NAME(func_name));                          \
+	NOKPROBE_SYMBOL(ENTRY_HANDLER_NAME(func_name));                        \
                                                                                \
 	static struct kretprobe name = {                                       \
-		.handler = RET_HANDLER_NAME(func_name),                        \
+		.entry_handler = ENTRY_HANDLER_NAME(func_name),                        \
 		.kp = { \
 			.symbol_name = #func_name, \
 		},                                 \
-		.maxactive = 20,                                               \
+		.maxactive = 128,                                               \
 	};
 
 static void delete_list(struct list_head *list)
@@ -236,16 +239,14 @@ static struct miscdevice miscdev = {
 struct proc_dir_entry *proc_entry;
 
 DEFINE_CALL_COUNT_KRETPROBE(sched_probe, schedule, sched)
+DEFINE_CALL_COUNT_KRETPROBE(up_probe, up, up)
+DEFINE_CALL_COUNT_KRETPROBE(down_probe, down, down)
+DEFINE_CALL_COUNT_KRETPROBE(lock_probe, mutex_lock_nested, lock)
+DEFINE_CALL_COUNT_KRETPROBE(unlock_probe, mutex_unlock, unlock)
 
-static int register_probes(void)
-{
-	return register_kretprobe(&sched_probe);
-}
-
-static void unregister_probes(void)
-{
-	unregister_kretprobe(&sched_probe);
-}
+static struct kretprobe *probes[] = {
+	&sched_probe, &up_probe, &down_probe, &lock_probe, &unlock_probe,
+};
 
 static int tracer_init(void)
 {
@@ -261,7 +262,7 @@ static int tracer_init(void)
 		return -EIO;
 	}
 
-	if (register_probes()) {
+	if (register_kretprobes(probes, ARRAY_SIZE(probes))) {
 		pr_err("Failed to register kretprobes");
 		return -EIO;
 	}
@@ -273,7 +274,7 @@ static void tracer_exit(void)
 {
 	proc_remove(proc_entry);
 	misc_deregister(&miscdev);
-	unregister_probes();
+	unregister_kretprobes(probes, ARRAY_SIZE(probes));
 	delete_hash_table();
 }
 
