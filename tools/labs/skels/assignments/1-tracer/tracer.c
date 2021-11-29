@@ -20,7 +20,6 @@ MODULE_LICENSE("GPL v2");
 #define procfs_filename "tracer"
 
 #define TRACER_HASH_TABLE_BITS 8
-#define TRACER_MEMORY_HASH_TABLE_BITS 10
 #define MAX_ACTIVE_KRETPROBES 20
 
 #define alloc(name, type) type *name = kmalloc(sizeof(*name), GFP_ATOMIC)
@@ -214,8 +213,10 @@ static void stop_tracking_process(pid_t pid)
 
 	node = get_tracer_entry(pid);
 
-	if (!node)
+	if (!node) {
+		write_unlock(&lock);
 		return;
+	}
 
 	hash_del(&node->node);
 
@@ -330,7 +331,7 @@ static int kfree_entry_handler(struct kretprobe_instance *ri,
 
 	lock_owner = 0;
 	write_unlock(&lock);
-	
+
 	return 1;
 }
 NOKPROBE_SYMBOL(kfree_entry_handler);
@@ -343,15 +344,33 @@ static struct kretprobe kfree_probe = {
 	.maxactive = MAX_ACTIVE_KRETPROBES,
 };
 
+static int do_exit_entry_handler(struct kretprobe_instance *ri,
+				 struct pt_regs *regs)
+{
+	if (current && current->pid)
+		stop_tracking_process(current->pid);
+
+	return 1;
+}
+NOKPROBE_SYMBOL(do_exit_entry_handler);
+
+static struct kretprobe do_exit_probe = {
+	.entry_handler = do_exit_entry_handler,
+	.kp = {
+		.symbol_name = "do_exit",
+	},
+	.maxactive = MAX_ACTIVE_KRETPROBES,
+};
+
 DEFINE_CALL_COUNT_KRETPROBE(sched_probe, schedule, sched)
 DEFINE_CALL_COUNT_KRETPROBE(up_probe, up, up)
-DEFINE_CALL_COUNT_KRETPROBE(down_probe, down, down)
+DEFINE_CALL_COUNT_KRETPROBE(down_probe, down_interruptible, down)
 DEFINE_CALL_COUNT_KRETPROBE(lock_probe, mutex_lock_nested, lock)
 DEFINE_CALL_COUNT_KRETPROBE(unlock_probe, mutex_unlock, unlock)
 
 static struct kretprobe *probes[] = {
 	&kmalloc_probe, &kfree_probe, &sched_probe,  &up_probe,
-	&down_probe,	&lock_probe,  &unlock_probe,
+	&down_probe,	&lock_probe,  &unlock_probe, &do_exit_probe,
 };
 
 static long ioctl_handler(struct file *file, unsigned int command,
@@ -396,11 +415,6 @@ static struct proc_dir_entry *proc_entry;
 
 static int tracer_init(void)
 {
-	if (register_kretprobes(probes, ARRAY_SIZE(probes))) {
-		pr_err("Failed to register kretprobes");
-		return -EIO;
-	}
-
 	proc_entry = proc_create(procfs_filename, 0444, NULL, &pops);
 
 	if (!proc_entry) {
@@ -413,14 +427,19 @@ static int tracer_init(void)
 		return -EIO;
 	}
 
+	if (register_kretprobes(probes, ARRAY_SIZE(probes))) {
+		pr_err("Failed to register kretprobes");
+		return -EIO;
+	}
+
 	return 0;
 }
 
 static void tracer_exit(void)
 {
+	unregister_kretprobes(probes, ARRAY_SIZE(probes));
 	proc_remove(proc_entry);
 	misc_deregister(&miscdev);
-	unregister_kretprobes(probes, ARRAY_SIZE(probes));
 	delete_hash_table();
 }
 
