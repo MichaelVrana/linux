@@ -14,7 +14,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
-#include <linux/spinlock.h>
+#include <linux/mutex.h>
 
 #define FALSE 0
 #define TRUE 1
@@ -47,7 +47,7 @@ struct list_node {
 /* TODO 2: define your list! */
 LIST_HEAD(head);
 
-DEFINE_RWLOCK(lock);
+DEFINE_MUTEX(mutex);
 
 static struct list_node *list_node_init(const char *str)
 {
@@ -62,13 +62,13 @@ static int list_proc_show(struct seq_file *m, void *v)
 {
 	struct list_node *curr;
 
-	read_lock(&lock);
+	mutex_lock(&mutex);
 
 	/* TODO 3: print your list. One element / line. */
 	list_for_each_entry (curr, &head, list)
 		seq_puts(m, curr->str);
 
-	read_unlock(&lock);
+	mutex_unlock(&mutex);
 
 	return 0;
 }
@@ -149,66 +149,58 @@ static void add_start(const char *str)
 {
 	struct list_node *node = list_node_init(str);
 
-	write_lock(&lock);
+	mutex_lock(&mutex);
 
 	list_add(&node->list, &head);
 
-	write_unlock(&lock);
+	mutex_unlock(&mutex);
 }
 
 static void add_end(const char *str)
 {
 	struct list_node *node = list_node_init(str);
 
-	write_lock(&lock);
+	mutex_lock(&mutex);
 
 	list_add_tail(&node->list, &head);
 
-	write_unlock(&lock);
+	mutex_unlock(&mutex);
 }
 
 static void delete_first(const char *str)
 {
-	struct list_head *curr;
-	struct list_head *tmp;
-	struct list_node *node;
+	struct list_node *curr, *tmp;
 
-	write_lock(&lock);
+	mutex_lock(&mutex);
 
-	list_for_each_safe (curr, tmp, &head) {
-		node = list_entry(curr, struct list_node, list);
-
-		if (!strcmp(str, node->str)) {
-			list_del(curr);
-			kfree(node->str);
-			kfree(node);
+	list_for_each_entry_safe (curr, tmp, &head, list) {
+		if (!strcmp(str, curr->str)) {
+			list_del(&curr->list);
+			kfree(curr->str);
+			kfree(curr);
 
 			break;
 		}
 	}
 
-	write_unlock(&lock);
+	mutex_unlock(&mutex);
 }
 
 static void delete_all(const char *str)
 {
-	struct list_head *curr;
-	struct list_head *tmp;
-	struct list_node *node;
+	struct list_node *curr, *tmp;
 
-	write_lock(&lock);
+	mutex_lock(&mutex);
 
-	list_for_each_safe (curr, tmp, &head) {
-		node = list_entry(curr, struct list_node, list);
-
-		if (!strcmp(str, node->str)) {
-			list_del(curr);
-			kfree(node->str);
-			kfree(node);
+	list_for_each_entry_safe (curr, tmp, &head, list) {
+		if (!strcmp(str, curr->str)) {
+			list_del(&curr->list);
+			kfree(curr->str);
+			kfree(curr);
 		}
 	}
 
-	write_unlock(&lock);
+	mutex_unlock(&mutex);
 }
 
 static int process_command(const char *buffer, size_t size)
@@ -310,7 +302,7 @@ static void delete_list(void)
 	struct list_head *tmp;
 	struct list_node *node;
 
-	write_lock(&lock);
+	mutex_lock(&mutex);
 
 	list_for_each_safe (curr, tmp, &head) {
 		node = list_entry(curr, struct list_node, list);
@@ -320,7 +312,7 @@ static void delete_list(void)
 		kfree(node);
 	}
 
-	write_unlock(&lock);
+	mutex_unlock(&mutex);
 }
 
 static void list_exit(void)
