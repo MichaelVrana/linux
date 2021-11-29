@@ -1,11 +1,18 @@
+KDIR = /home/michael/projects/linux
+
 LDFLAGS = -m32 -static
 
 .PHONY: all clean
 
-all: tracer_test tracer.ko
+all: tracer_test tracer.ko tracer_helper.ko
 
-tracer.ko:
+tracer.ko: ../tracer.c ../tracer.h
+	make -C ..
 	ln -sfn ../tracer.ko $@
+
+tracer_helper.ko:
+	make -C _helper
+	ln -sfn _helper/tracer_helper.ko $@
 
 tracer_test: tracer_test.o
 

@@ -58,15 +58,15 @@ static struct tracer_hlist_node *get_tracer_entry(pid_t pid)
 	return NULL;
 }
 
-#define ENTRY_HANDLER_NAME(name) name##_entry_handler
+#define HANDLER_NAME(name) name##_entry_handler
 
 #define DEFINE_CALL_COUNT_KRETPROBE(name, func_name, node_member)              \
-	static int ENTRY_HANDLER_NAME(func_name)(                              \
-		struct kretprobe_instance * ri, struct pt_regs * regs)         \
+	static int HANDLER_NAME(func_name)(struct kretprobe_instance * ri,     \
+					   struct pt_regs * regs)              \
 	{                                                                      \
 		struct tracer_hlist_node *tracer_entry;                        \
                                                                                \
-		if (!current || !current->pid)                 \
+		if (!current || !current->pid)                                 \
 			return 1;                                              \
                                                                                \
 		read_lock(&lock);                                              \
@@ -80,16 +80,16 @@ static struct tracer_hlist_node *get_tracer_entry(pid_t pid)
                                                                                \
 		atomic_inc(&tracer_entry->node_member);                        \
 		read_unlock(&lock);                                            \
-		return 0;                                                      \
+		return 1;                                                      \
 	}                                                                      \
-	NOKPROBE_SYMBOL(ENTRY_HANDLER_NAME(func_name));                        \
+	NOKPROBE_SYMBOL(HANDLER_NAME(func_name));                              \
                                                                                \
 	static struct kretprobe name = {                                       \
-		.entry_handler = ENTRY_HANDLER_NAME(func_name),                        \
+		.entry_handler = HANDLER_NAME(func_name),                        \
 		.kp = { \
 			.symbol_name = #func_name, \
 		},                                 \
-		.maxactive = 128,                                               \
+		.maxactive = 20,                                               \
 	};
 
 static void delete_list(struct list_head *list)
@@ -135,7 +135,7 @@ static int tracer_print(struct seq_file *m, void *v)
 
 static struct tracer_hlist_node *tracer_hlist_node_init(pid_t pid)
 {
-	struct tracer_hlist_node *node = kmalloc(sizeof(node), GFP_KERNEL);
+	struct tracer_hlist_node *node = kmalloc(sizeof(node), GFP_ATOMIC);
 
 	node->pid = pid;
 
@@ -165,12 +165,14 @@ static void track_process(pid_t pid)
 
 static void stop_tracking_process(pid_t pid)
 {
-	struct tracer_hlist_node *node = get_tracer_entry(pid);
+	struct tracer_hlist_node *node;
+
+	write_lock(&lock);
+
+	node = get_tracer_entry(pid);
 
 	if (!node)
 		return;
-
-	write_lock(&lock);
 
 	hash_del(&node->node);
 
@@ -211,7 +213,7 @@ static long ioctl_handler(struct file *file, unsigned int command,
 		break;
 	}
 
-	return 1;
+	return 0;
 }
 
 static int proc_read_open(struct inode *inode, struct file *file)
@@ -250,6 +252,11 @@ static struct kretprobe *probes[] = {
 
 static int tracer_init(void)
 {
+	if (register_kretprobes(probes, ARRAY_SIZE(probes))) {
+		pr_err("Failed to register kretprobes");
+		return -EIO;
+	}
+
 	proc_entry = proc_create(procfs_filename, 0444, NULL, &pops);
 
 	if (!proc_entry) {
@@ -259,11 +266,6 @@ static int tracer_init(void)
 
 	if (misc_register(&miscdev)) {
 		pr_err("Failed to register miscdevice");
-		return -EIO;
-	}
-
-	if (register_kretprobes(probes, ARRAY_SIZE(probes))) {
-		pr_err("Failed to register kretprobes");
 		return -EIO;
 	}
 
