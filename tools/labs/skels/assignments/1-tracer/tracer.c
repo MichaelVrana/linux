@@ -138,15 +138,11 @@ tracer_hlist_node_free_mem_block(struct tracer_hlist_node *tracer_entry,
 
 static void delete_list(struct list_head *list)
 {
-	struct list_head *curr;
-	struct list_head *tmp;
-	struct tracer_mem_block_node *node;
+	struct tracer_mem_block_node *curr, *tmp;
 
-	list_for_each_safe (curr, tmp, list) {
-		node = list_entry(curr, struct tracer_mem_block_node, head);
-
-		list_del(curr);
-		kfree(node);
+	list_for_each_entry_safe (curr, tmp, list, head) {
+		list_del(&curr->head);
+		kfree(curr);
 	}
 }
 
