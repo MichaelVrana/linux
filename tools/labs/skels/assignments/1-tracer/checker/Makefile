@@ -25,5 +25,6 @@ run: all
 
 clean:
 	-rm -f *~
-	-rm -f tracer_test.o tracer_test
+	-rm -f tracer_test.o tracer_test tracer_helper.ko tracer.ko
 	-make -C _test clean
+	-make -C _helper clean

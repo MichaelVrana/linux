@@ -22,6 +22,8 @@ MODULE_LICENSE("GPL v2");
 #define TRACER_HASH_TABLE_BITS 8
 #define TRACER_MEMORY_HASH_TABLE_BITS 10
 
+#define alloc(name, type) type *name = kmalloc(sizeof(*name), GFP_ATOMIC)
+
 struct tracer_mem_block_node {
 	struct list_head head;
 	u64 address;
@@ -135,7 +137,7 @@ static int tracer_print(struct seq_file *m, void *v)
 
 static struct tracer_hlist_node *tracer_hlist_node_init(pid_t pid)
 {
-	struct tracer_hlist_node *node = kmalloc(sizeof(node), GFP_ATOMIC);
+	alloc(node, struct tracer_hlist_node);
 
 	node->pid = pid;
 
