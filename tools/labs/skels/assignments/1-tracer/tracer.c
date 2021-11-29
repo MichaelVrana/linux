@@ -21,22 +21,23 @@ MODULE_LICENSE("GPL v2");
 
 #define TRACER_HASH_TABLE_BITS 8
 #define TRACER_MEMORY_HASH_TABLE_BITS 10
+#define MAX_ACTIVE_KRETPROBES 20
 
 #define alloc(name, type) type *name = kmalloc(sizeof(*name), GFP_ATOMIC)
 
 struct tracer_mem_block_node {
 	struct list_head head;
-	u64 address;
-	u64 size;
+	void *ptr;
+	size_t size;
 };
 
 struct tracer_hlist_node {
 	struct hlist_node node;
-	struct list_head alloc_mem_blocks;
+	struct list_head allocated_mem_blocks;
 	atomic_t kmalloc;
-	atomic_t kfree;
-	atomic_t kmalloc_mem;
-	atomic_t kfree_mem;
+	u32 kfree;
+	u64 kmalloc_mem;
+	u64 kfree_mem;
 	atomic_t sched;
 	atomic_t up;
 	atomic_t down;
@@ -47,6 +48,9 @@ struct tracer_hlist_node {
 
 DEFINE_HASHTABLE(tracer_hash_table, TRACER_HASH_TABLE_BITS);
 DEFINE_RWLOCK(lock);
+
+// used to prevent deadlock when calling kmalloc/kfree inside kreprobes handler cirtical sections
+static pid_t lock_owner = 0;
 
 static struct tracer_hlist_node *get_tracer_entry(pid_t pid)
 {
@@ -75,12 +79,9 @@ static struct tracer_hlist_node *get_tracer_entry(pid_t pid)
                                                                                \
 		tracer_entry = get_tracer_entry(current->pid);                 \
                                                                                \
-		if (!tracer_entry) {                                           \
-			read_unlock(&lock);                                    \
-			return 1;                                              \
-		}                                                              \
+		if (tracer_entry)                                              \
+			atomic_inc(&tracer_entry->node_member);                \
                                                                                \
-		atomic_inc(&tracer_entry->node_member);                        \
 		read_unlock(&lock);                                            \
 		return 1;                                                      \
 	}                                                                      \
@@ -91,8 +92,50 @@ static struct tracer_hlist_node *get_tracer_entry(pid_t pid)
 		.kp = { \
 			.symbol_name = #func_name, \
 		},                                 \
-		.maxactive = 20,                                               \
+		.maxactive = MAX_ACTIVE_KRETPROBES,                                               \
 	};
+
+static struct tracer_mem_block_node *tracer_mem_block_node_init(void *ptr,
+								size_t size)
+{
+	alloc(node, struct tracer_mem_block_node);
+
+	node->ptr = ptr;
+	node->size = size;
+
+	return node;
+}
+
+static void
+tracer_hlist_node_record_mem_block(struct tracer_hlist_node *tracer_entry,
+				   void *ptr, size_t size)
+{
+	struct tracer_mem_block_node *mem_block_node =
+		tracer_mem_block_node_init(ptr, size);
+
+	tracer_entry->kmalloc_mem += size;
+
+	list_add(&mem_block_node->head, &tracer_entry->allocated_mem_blocks);
+}
+
+static void
+tracer_hlist_node_free_mem_block(struct tracer_hlist_node *tracer_entry,
+				 void *ptr)
+{
+	struct tracer_mem_block_node *curr;
+
+	list_for_each_entry (curr, &tracer_entry->allocated_mem_blocks, head) {
+		if (curr->ptr != ptr)
+			continue;
+
+		tracer_entry->kfree_mem += curr->size;
+
+		list_del(&curr->head);
+		kfree(curr);
+
+		return;
+	}
+}
 
 static void delete_list(struct list_head *list)
 {
@@ -120,11 +163,9 @@ static int tracer_print(struct seq_file *m, void *v)
 	read_lock(&lock);
 
 	hash_for_each (tracer_hash_table, i, curr, node) {
-		seq_printf(m, "%u\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
-			   curr->pid, atomic_read(&curr->kmalloc),
-			   atomic_read(&curr->kfree),
-			   atomic_read(&curr->kmalloc_mem),
-			   atomic_read(&curr->kfree_mem),
+		seq_printf(m, "%u\t%u\t%u\t%llu\t%llu\t%u\t%u\t%u\t%u\t%u\n",
+			   curr->pid, atomic_read(&curr->kmalloc), curr->kfree,
+			   curr->kmalloc_mem, curr->kfree_mem,
 			   atomic_read(&curr->sched), atomic_read(&curr->up),
 			   atomic_read(&curr->down), atomic_read(&curr->lock),
 			   atomic_read(&curr->unlock));
@@ -141,12 +182,12 @@ static struct tracer_hlist_node *tracer_hlist_node_init(pid_t pid)
 
 	node->pid = pid;
 
-	INIT_LIST_HEAD(&node->alloc_mem_blocks);
+	INIT_LIST_HEAD(&node->allocated_mem_blocks);
 
+	node->kfree = 0;
+	node->kmalloc_mem = 0;
+	node->kfree_mem = 0;
 	atomic_set(&node->kmalloc, 0);
-	atomic_set(&node->kfree, 0);
-	atomic_set(&node->kmalloc_mem, 0);
-	atomic_set(&node->kfree_mem, 0);
 	atomic_set(&node->sched, 0);
 	atomic_set(&node->up, 0);
 	atomic_set(&node->down, 0);
@@ -180,7 +221,7 @@ static void stop_tracking_process(pid_t pid)
 
 	write_unlock(&lock);
 
-	delete_list(&node->alloc_mem_blocks);
+	delete_list(&node->allocated_mem_blocks);
 	kfree(node);
 }
 
@@ -193,7 +234,7 @@ static void delete_hash_table(void)
 	write_lock(&lock);
 
 	hash_for_each_safe (tracer_hash_table, i, tmp, curr, node) {
-		delete_list(&curr->alloc_mem_blocks);
+		delete_list(&curr->allocated_mem_blocks);
 
 		hash_del(&curr->node);
 		kfree(curr);
@@ -201,6 +242,117 @@ static void delete_hash_table(void)
 
 	write_unlock(&lock);
 }
+
+struct kmalloc_kretprobe_data {
+	size_t size;
+};
+
+static int kmalloc_entry_handler(struct kretprobe_instance *ri,
+				 struct pt_regs *regs)
+{
+	struct tracer_hlist_node *tracer_entry;
+	struct kmalloc_kretprobe_data *probe_data;
+
+	if (!current || !current->pid || current->pid == lock_owner)
+		return 1;
+
+	read_lock(&lock);
+
+	tracer_entry = get_tracer_entry(current->pid);
+
+	if (!tracer_entry) {
+		read_unlock(&lock);
+		return 1;
+	}
+
+	atomic_inc(&tracer_entry->kmalloc);
+	read_unlock(&lock);
+
+	probe_data = (struct kmalloc_kretprobe_data *)ri->data;
+	probe_data->size = (size_t)regs_get_kernel_argument(regs, 0);
+
+	return 0;
+}
+NOKPROBE_SYMBOL(kmalloc_entry_handler);
+
+static int kmalloc_ret_handler(struct kretprobe_instance *ri,
+			       struct pt_regs *regs)
+{
+	struct tracer_hlist_node *tracer_entry;
+	void *ptr = (void *)regs_return_value(regs);
+	struct kmalloc_kretprobe_data *probe_data =
+		(struct kmalloc_kretprobe_data *)ri->data;
+
+	write_lock(&lock);
+	lock_owner = current->pid;
+
+	tracer_entry = get_tracer_entry(current->pid);
+
+	if (tracer_entry)
+		tracer_hlist_node_record_mem_block(tracer_entry, ptr,
+						   probe_data->size);
+
+	lock_owner = 0;
+	write_unlock(&lock);
+
+	return 0;
+}
+NOKPROBE_SYMBOL(kmalloc_ret_handler);
+
+static struct kretprobe kmalloc_probe = { 
+	.entry_handler = kmalloc_entry_handler,
+	.handler = kmalloc_ret_handler,
+	.kp = { 
+		.symbol_name = "__kmalloc",
+	}, 
+	.maxactive = MAX_ACTIVE_KRETPROBES,
+	.data_size = sizeof(struct kmalloc_kretprobe_data),
+};
+
+static int kfree_entry_handler(struct kretprobe_instance *ri,
+			       struct pt_regs *regs)
+{
+	struct tracer_hlist_node *tracer_entry;
+	void *ptr = (void *)regs_get_kernel_argument(regs, 0);
+
+	if (!current || !current->pid || current->pid == lock_owner)
+		return 1;
+
+	write_lock(&lock);
+	lock_owner = current->pid;
+
+	tracer_entry = get_tracer_entry(current->pid);
+
+	if (tracer_entry) {
+		++(tracer_entry->kfree);
+		tracer_hlist_node_free_mem_block(tracer_entry, ptr);
+	}
+
+	lock_owner = 0;
+	write_unlock(&lock);
+	
+	return 1;
+}
+NOKPROBE_SYMBOL(kfree_entry_handler);
+
+static struct kretprobe kfree_probe = { 
+	.entry_handler = kfree_entry_handler,
+	.kp = { 
+		.symbol_name = "kfree",
+	},
+	.maxactive = MAX_ACTIVE_KRETPROBES,
+};
+
+DEFINE_CALL_COUNT_KRETPROBE(sched_probe, schedule, sched)
+DEFINE_CALL_COUNT_KRETPROBE(up_probe, up, up)
+DEFINE_CALL_COUNT_KRETPROBE(down_probe, down, down)
+DEFINE_CALL_COUNT_KRETPROBE(lock_probe, mutex_lock_nested, lock)
+DEFINE_CALL_COUNT_KRETPROBE(unlock_probe, mutex_unlock, unlock)
+
+static struct kretprobe *probes[] = {
+	&kmalloc_probe, &kfree_probe, &sched_probe,  &up_probe,
+	&down_probe,	&lock_probe,  &unlock_probe,
+};
 
 static long ioctl_handler(struct file *file, unsigned int command,
 			  unsigned long arg)
@@ -240,17 +392,7 @@ static struct miscdevice miscdev = {
 	.fops = &fops,
 };
 
-struct proc_dir_entry *proc_entry;
-
-DEFINE_CALL_COUNT_KRETPROBE(sched_probe, schedule, sched)
-DEFINE_CALL_COUNT_KRETPROBE(up_probe, up, up)
-DEFINE_CALL_COUNT_KRETPROBE(down_probe, down, down)
-DEFINE_CALL_COUNT_KRETPROBE(lock_probe, mutex_lock_nested, lock)
-DEFINE_CALL_COUNT_KRETPROBE(unlock_probe, mutex_unlock, unlock)
-
-static struct kretprobe *probes[] = {
-	&sched_probe, &up_probe, &down_probe, &lock_probe, &unlock_probe,
-};
+static struct proc_dir_entry *proc_entry;
 
 static int tracer_init(void)
 {
