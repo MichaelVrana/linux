@@ -229,6 +229,7 @@ static void delete_hash_table(void)
 	struct tracer_hlist_node *curr;
 
 	write_lock(&lock);
+	lock_owner = current->pid;
 
 	hash_for_each_safe (tracer_hash_table, i, tmp, curr, node) {
 		delete_list(&curr->allocated_mem_blocks);
@@ -237,6 +238,7 @@ static void delete_hash_table(void)
 		kfree(curr);
 	}
 
+	lock_owner = 0;
 	write_unlock(&lock);
 }
 
