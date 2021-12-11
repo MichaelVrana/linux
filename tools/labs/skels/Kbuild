@@ -17,3 +17,5 @@ obj-m += ./kernel_api/3-memory/
 obj-m += ./kernel_api/7-list-test/
 obj-m += ./assignments/0-list/
 obj-m += ./assignments/1-tracer/checker/_helper/
+obj-m += ./assignments/1-tracer/
+obj-m += ./memory_mapping/kmmap/
