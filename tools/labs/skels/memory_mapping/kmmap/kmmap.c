@@ -74,12 +74,16 @@ static int my_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	int ret;
 	long length = vma->vm_end - vma->vm_start;
+	unsigned long pfn;
 
 	/* do not map more than we can */
 	if (length > NPAGES * PAGE_SIZE)
 		return -EIO;
 
 	/* TODO 1: map the whole physically contiguous area in one piece */
+	pfn = virt_to_phys((void *)kmalloc_area) >> PAGE_SHIFT;
+	ret = remap_pfn_range(vma, vma->vm_start, pfn, length,
+			      vma->vm_page_prot);
 
 	return 0;
 }
@@ -110,6 +114,7 @@ static int my_seq_show(struct seq_file *seq, void *v)
 static int my_seq_open(struct inode *inode, struct file *file)
 {
 	/* TODO 3: Register the display function */
+	return 0;
 }
 
 static const struct proc_ops my_proc_ops = {
@@ -135,18 +140,18 @@ static int __init my_init(void)
 	kmalloc_ptr = kmalloc((NPAGES + 2) * PAGE_SIZE, GFP_KERNEL);
 
 	/* TODO 1: round kmalloc_ptr to nearest page start address */
-	kmalloc_area = PAGE_ALIGN(kmalloc_ptr);
+	kmalloc_area = (char *) PAGE_ALIGN((unsigned long)kmalloc_ptr);
 
 	/* TODO 1: mark pages as reserved */
-	for (i = 0; i < NPAGES + 2; ++i)
+	for (i = 0; i < NPAGES; ++i)
 		SetPageReserved(virt_to_page(kmalloc_area + (i * PAGE_SIZE)));
 
 	/* TODO 1: write data in each page */
-	for (i = 0; i < (NPAGES + 2) * PAGE_SIZE; i += PAGE_SIZE) {
-		kmalloc_area[i] = (char) 0xaa;
-		kmalloc_area[i + 1] = (char) 0xbb;
-		kmalloc_area[i + 2] = (char) 0xcc;
-		kmalloc_area[i + 3] = (char) 0xdd;
+	for (i = 0; i < NPAGES * PAGE_SIZE; i += PAGE_SIZE) {
+		kmalloc_area[i] = (char)0xaa;
+		kmalloc_area[i + 1] = (char)0xbb;
+		kmalloc_area[i + 2] = (char)0xcc;
+		kmalloc_area[i + 3] = (char)0xdd;
 	}
 
 	/* Init device. */
@@ -176,6 +181,10 @@ static void __exit my_exit(void)
 	cdev_del(&mmap_cdev);
 
 	/* TODO 1: clear reservation on pages and free mem. */
+	for (i = 0; i < NPAGES; ++i)
+		ClearPageReserved(virt_to_page(kmalloc_area + i * PAGE_SIZE));
+
+	kfree(kmalloc_ptr);
 
 	unregister_chrdev_region(MKDEV(MY_MAJOR, 0), 1);
 	/* TODO 3: remove proc entry */
