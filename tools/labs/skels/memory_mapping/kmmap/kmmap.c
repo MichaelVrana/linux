@@ -54,8 +54,12 @@ static int my_read(struct file *file, char __user *user_buffer, size_t size,
 		   loff_t *offset)
 {
 	/* TODO 2: check size doesn't exceed our mapped area size */
+	if (size > NPAGES * PAGE_SIZE)
+		size = NPAGES * PAGE_SIZE;
 
 	/* TODO 2: copy from mapped area to user buffer */
+	if (copy_to_user(user_buffer, kmalloc_area, size))
+		return -EFAULT;
 
 	return size;
 }
@@ -64,8 +68,14 @@ static int my_write(struct file *file, const char __user *user_buffer,
 		    size_t size, loff_t *offset)
 {
 	/* TODO 2: check size doesn't exceed our mapped area size */
+	if (size > NPAGES * PAGE_SIZE)
+		size = NPAGES * PAGE_SIZE;
 
 	/* TODO 2: copy from user buffer to mapped area */
+	memset(kmalloc_area, 0, NPAGES * PAGE_SIZE);
+
+	if (copy_from_user(kmalloc_area, user_buffer, size))
+		return -EFAULT;
 
 	return size;
 }
@@ -140,7 +150,7 @@ static int __init my_init(void)
 	kmalloc_ptr = kmalloc((NPAGES + 2) * PAGE_SIZE, GFP_KERNEL);
 
 	/* TODO 1: round kmalloc_ptr to nearest page start address */
-	kmalloc_area = (char *) PAGE_ALIGN((unsigned long)kmalloc_ptr);
+	kmalloc_area = (char *)PAGE_ALIGN((unsigned long)kmalloc_ptr);
 
 	/* TODO 1: mark pages as reserved */
 	for (i = 0; i < NPAGES; ++i)
