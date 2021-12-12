@@ -39,13 +39,15 @@ static unsigned int ioctl_set_addr;
  */
 static int test_daddr(unsigned int dst_addr)
 {
-	int ret = 0;
-
 	/* TODO 2: return non-zero if address has been set
 	 * *and* matches dst_addr
 	 */
+	if (atomic_read(&ioctl_set))
+		return dst_addr == ioctl_set_addr;
+	else
+		return 1;
 
-	return ret;
+	return 0;
 }
 
 /* TODO 1: netfilter hook function */
@@ -55,7 +57,8 @@ static unsigned int hook_handler(void *priv, struct sk_buff *skb,
 	struct iphdr *ip_header = ip_hdr(skb);
 	struct tcphdr *tcp_header;
 
-	if (ip_header->protocol != IPPROTO_TCP)
+	if (!(ip_header->protocol == IPPROTO_TCP &&
+	      test_daddr(ip_header->daddr)))
 		return NF_ACCEPT;
 
 	tcp_header = tcp_hdr(skb);
@@ -83,6 +86,11 @@ static long my_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	switch (cmd) {
 	case MY_IOCTL_FILTER_ADDRESS:
 		/* TODO 2: set filter address from arg */
+		if (copy_from_user(&ioctl_set_addr, (void *)arg,
+				   sizeof(ioctl_set_addr)))
+			return -EFAULT;
+
+		atomic_set(&ioctl_set, 1);
 		break;
 
 	default:
